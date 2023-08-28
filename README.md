@@ -27,7 +27,7 @@ my_ff = torch.nn.Sequential(
 use
 ```
 depth = ... # your choice of the FFF depth
-leaf_width = math.ceil(hidden_width // 2**depth)
+leaf_width = math.ceil(hidden_width / 2**depth)
 my_ff = FFF(
     input_width,
     leaf_width,
