@@ -1,1 +1,1 @@
-from fff import FFF
+from .fff import FFF
