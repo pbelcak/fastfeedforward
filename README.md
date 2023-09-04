@@ -28,13 +28,16 @@ use
 ```
 depth = ... # your choice of the FFF depth
 leaf_width = math.ceil(hidden_width / 2**depth)
+region_leak # your choice of the region leak probability (0 - 0.5) to encourage generalisation in very deep FFFs
+
 my_ff = FFF(
     input_width,
     leaf_width,
     output_width,
     depth,
     activation=torch.nn.ReLU(),
-    dropout=dropout
+    dropout=dropout,
+    region_leak=region_leak
 )
 ```
 
@@ -46,7 +49,7 @@ Use `help(fastfeedforward.FFF)` to display the following documentation.
 
 ```
 class FFF(torch.nn.modules.module.Module)
- |  FFF(input_width: int, hidden_width: int, output_width: int, depth: int, activation=ReLU(), dropout: float = 0.0, train_hardened: bool = False)
+ |  FFF(input_width: int, hidden_width: int, output_width: int, depth: int, activation=ReLU(), dropout: float = 0.0, train_hardened: bool = False, region_leak: float = 0.0)
  |
  |  An implementation of fast feedforward networks from the paper "Fast Feedforward Networks".
  |
@@ -57,7 +60,7 @@ class FFF(torch.nn.modules.module.Module)
  |
  |  Methods defined here:
  |
- |  __init__(self, input_width: int, hidden_width: int, output_width: int, depth: int, activation=ReLU(), dropout: float = 0.0, train_hardened: bool = False)
+ |  __init__(self, input_width: int, hidden_width: int, output_width: int, depth: int, activation=ReLU(), dropout: float = 0.0, train_hardened: bool = False, region_leak: float = 0.0)
  |      Initializes a fast feedforward network (FFF).
  |
  |      Parameters
@@ -65,7 +68,7 @@ class FFF(torch.nn.modules.module.Module)
  |      input_width : int
  |              The width of the input, i.e. the size of the last dimension of the tensor passed into `forward()`.
  |      hidden_width : int
- |              The width of every leaf of this FFF.
+ |              The width of each leaf of this FFF.
  |      output_width : int
  |              The width of the output, i.e. the size of the last dimension of the tensor returned by `forward()`.
  |      depth : int
@@ -74,18 +77,26 @@ class FFF(torch.nn.modules.module.Module)
  |              The activation function to use. Defaults to `torch.nn.ReLU()`.
  |      dropout : float, optional
  |              The probability to use for the dropout at the leaves after the activations have been computed. Defaults to 0.0.
+ |              Plays no role if self.training is False.
  |      train_hardened : bool, optional
  |              Whether to use hardened decisions during training. Defaults to False.
+ |      region_leak : float, optional
+ |              The probability of a region to leak to the next region at each node. Defaults to 0.0.
+ |              Plays no role if self.training is False.
  |
  |      Raises
  |      ------
  |      ValueError
  |              - if `depth`, `input_width`, `hidden_width` or `output_width` are not positive integers
+ |              - if `dropout` is not in the range [0, 1]
+ |              - if `region_leak` is not in the range [0, 1]
  |
  |      Notes
  |      -----
  |      - The number of leaves of the FFF will be 2**depth.
  |      - The number of nodes of the FFF will be 2**depth - 1.
+ |      - The region leak of >0.5 effectively reverses the roles of the left and right child at each node.
+ |      - Dropout and region leaks are only applied during training (i.e. model.eval() will disable them).
  |
  |  eval_forward(self, x: torch.Tensor) -> torch.Tensor
  |      Computes the forward pass of this FFF during evaluation (i.e. making hard decisions at each node and traversing the FFF in logarithmic time).

@@ -29,7 +29,7 @@ class FFF(nn.Module):
 	"""
 	An implementation of fast feedforward networks from the paper "Fast Feedforward Networks".
 	"""
-	def __init__(self, input_width: int, hidden_width: int, output_width: int, depth: int, activation=nn.ReLU(), dropout: float=0.0, train_hardened: bool=False):
+	def __init__(self, input_width: int, hidden_width: int, output_width: int, depth: int, activation=nn.ReLU(), dropout: float=0.0, train_hardened: bool=False, region_leak: float=0.0):
 		"""
 		Initializes a fast feedforward network (FFF).
 
@@ -38,7 +38,7 @@ class FFF(nn.Module):
 		input_width : int
 			The width of the input, i.e. the size of the last dimension of the tensor passed into `forward()`.
 		hidden_width : int
-			The width of every leaf of this FFF.
+			The width of each leaf of this FFF.
 		output_width : int
 			The width of the output, i.e. the size of the last dimension of the tensor returned by `forward()`.
 		depth : int
@@ -47,18 +47,26 @@ class FFF(nn.Module):
 			The activation function to use. Defaults to `torch.nn.ReLU()`.
 		dropout : float, optional
 			The probability to use for the dropout at the leaves after the activations have been computed. Defaults to 0.0.
+			Plays no role if self.training is False.
 		train_hardened : bool, optional
 			Whether to use hardened decisions during training. Defaults to False.
-
+		region_leak : float, optional
+			The probability of a region to leak to the next region at each node. Defaults to 0.0.
+			Plays no role if self.training is False.
+			
 		Raises
 		------
 		ValueError
 			- if `depth`, `input_width`, `hidden_width` or `output_width` are not positive integers
+			- if `dropout` is not in the range [0, 1]
+			- if `region_leak` is not in the range [0, 1]
 		
 		Notes
 		-----
 		- The number of leaves of the FFF will be 2**depth.
 		- The number of nodes of the FFF will be 2**depth - 1.
+		- The region leak of >0.5 effectively reverses the roles of the left and right child at each node.
+		- Dropout and region leaks are only applied during training (i.e. model.eval() will disable them).
 		"""
 		super().__init__()
 		self.input_width = input_width
@@ -67,9 +75,14 @@ class FFF(nn.Module):
 		self.dropout = dropout
 		self.activation = activation
 		self.train_hardened = train_hardened
+		self.region_leak = region_leak
 
 		if depth <= 0 or input_width <= 0 or hidden_width <= 0 or output_width <= 0:
 			raise ValueError("input/hidden/output widths and depth must be all positive integers")
+		if dropout < 0 or dropout > 1:
+			raise ValueError("dropout must be in the range [0, 1]")
+		if region_leak < 0 or region_leak > 1:
+			raise ValueError("region_leak must be in the range [0, 1]")
 
 		self.depth = nn.Parameter(torch.tensor(depth, dtype=torch.long), requires_grad=False)
 		self.n_leaves = 2 ** depth
@@ -152,7 +165,13 @@ class FFF(nn.Module):
 			boundary_plane_coeff_scores = torch.matmul(x, current_weights.transpose(0, 1))		# (batch_size, n_nodes)
 			boundary_plane_logits = boundary_plane_coeff_scores + current_biases.transpose(0, 1)# (batch_size, n_nodes)
 			boundary_effect = torch.sigmoid(boundary_plane_logits)								# (batch_size, n_nodes)
-			not_boundary_effect = 1 - boundary_effect											# (batch_size, n_nodes)
+
+			if self.region_leak > 0.0 and self.training:
+				transpositions = torch.empty_like(boundary_effect).uniform_(0, 1)		# (batch_size, n_cuts)
+				transpositions = transpositions < self.region_leak						# (batch_size, n_cuts)
+				boundary_effect = torch.abs(transpositions.float() - boundary_effect) 	# (batch_size, n_cuts)
+
+			not_boundary_effect = 1 - boundary_effect									# (batch_size, n_nodes)
 
 			if return_entropies:
 				platform_entropies = compute_entropy_safe(
