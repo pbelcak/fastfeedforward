@@ -131,6 +131,7 @@ class FFF(nn.Module):
 			The modified mixture is passed to the next node.
 			Finally, the outputs of all leaves are mixed together to obtain the final output.
 		- If `use_hard_decisions` is True and `return_entropies` is True, the entropies will be computed before the decisions are rounded.
+		- If self.training is False, region leaks and dropout will be disabled.
 		
 		Raises
 		------
@@ -265,6 +266,11 @@ class FFF(nn.Module):
 		-------
 		torch.Tensor
 			The output tensor. Will have shape (..., output_width).
+
+		Notes
+		-----
+		- Dropout and region leaks are not engaged by this method.
+
 		"""
 		original_shape = x.shape
 		x = x.view(-1, x.shape[-1])
