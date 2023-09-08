@@ -49,7 +49,7 @@ Use `help(fastfeedforward.FFF)` to display the following documentation.
 
 ```
 class FFF(torch.nn.modules.module.Module)
- |  FFF(input_width: int, hidden_width: int, output_width: int, depth: int, activation=ReLU(), dropout: float = 0.0, train_hardened: bool = False, region_leak: float = 0.0)
+ |  FFF(input_width: int, leaf_width: int, output_width: int, depth: int, activation=ReLU(), dropout: float = 0.0, train_hardened: bool = False, region_leak: float = 0.0, usage_mode: str = 'none')
  |
  |  An implementation of fast feedforward networks from the paper "Fast Feedforward Networks".
  |
@@ -60,14 +60,14 @@ class FFF(torch.nn.modules.module.Module)
  |
  |  Methods defined here:
  |
- |  __init__(self, input_width: int, hidden_width: int, output_width: int, depth: int, activation=ReLU(), dropout: float = 0.0, train_hardened: bool = False, region_leak: float = 0.0)
+ |  __init__(self, input_width: int, leaf_width: int, output_width: int, depth: int, activation=ReLU(), dropout: float = 0.0, train_hardened: bool = False, region_leak: float = 0.0, usage_mode: str = 'none')
  |      Initializes a fast feedforward network (FFF).
  |
  |      Parameters
  |      ----------
  |      input_width : int
  |              The width of the input, i.e. the size of the last dimension of the tensor passed into `forward()`.
- |      hidden_width : int
+ |      leaf_width : int
  |              The width of each leaf of this FFF.
  |      output_width : int
  |              The width of the output, i.e. the size of the last dimension of the tensor returned by `forward()`.
@@ -83,13 +83,18 @@ class FFF(torch.nn.modules.module.Module)
  |      region_leak : float, optional
  |              The probability of a region to leak to the next region at each node. Defaults to 0.0.
  |              Plays no role if self.training is False.
+ |      usage_mode : str, optional
+ |              The mode of recording usage of the leaves and nodes of this FFF.
+ |              Must be one of ['hard', 'soft, 'none']. Defaults to 'none'.
  |
  |      Raises
  |      ------
  |      ValueError
- |              - if `depth`, `input_width`, `hidden_width` or `output_width` are not positive integers
+ |              - if `input_width`, `leaf_width` or `output_width` are not positive integers
+ |              - if `depth` is not a positive integer or 0
  |              - if `dropout` is not in the range [0, 1]
  |              - if `region_leak` is not in the range [0, 1]
+ |              - if `usage_mode` is not one of ['hard', 'soft, 'none']
  |
  |      Notes
  |      -----
@@ -111,7 +116,11 @@ class FFF(torch.nn.modules.module.Module)
  |      torch.Tensor
  |              The output tensor. Will have shape (..., output_width).
  |
- |  forward(self, x: torch.Tensor, return_entropies: bool = False)
+ |      Notes
+ |      -----
+ |      - Dropout and region leaks are not engaged by this method.
+ |
+ |  forward(self, x: torch.Tensor, return_entropies: bool = False, use_hard_decisions: Optional[bool] = None)
  |      Computes the forward pass of this FFF.
  |      If `self.training` is True, `training_forward()` will be called, otherwise `eval_forward()` will be called.
  |
@@ -122,6 +131,12 @@ class FFF(torch.nn.modules.module.Module)
  |      return_entropies : bool, optional
  |              Whether to return the entropies of the decisions made at each node. Defaults to False.
  |              If True, the mean batch entropies for each node will be returned as a tensor of shape (n_nodes,).
+ |      use_hard_decisions : bool, optional
+ |              Whether to use hard decisions during the forward pass. Defaults to None.
+ |              If None and `self.training` is True, will effectively be False.
+ |              If None and `self.training` is False, will effectively be True.
+ |              Cannot be set to False if `self.training` is False.
+ |
  |
  |      Returns
  |      -------
@@ -136,11 +151,34 @@ class FFF(torch.nn.modules.module.Module)
  |      ValueError
  |              - if `x` does not have shape (..., input_width)
  |              - if `return_entropies` is True and `self.training` is False
+ |              - if `use_hard_decisions` is False and `self.training` is False
  |
  |      See Also
  |      --------
  |      `training_forward()`
  |      `eval_forward()`
+ |
+ |  get_leaf_param_group(self) -> dict
+ |      Returns the parameters of the leaves of this FFF, coupled with their usage tensor.
+ |
+ |      Returns
+ |      -------
+ |      dict
+ |              The parameters of the leaves of this FFF, coupled with their usage tensor.
+ |              Will have the following keys:
+ |                      - "params": a list containing the leaf parameters
+ |                      - "usage": the node usage tensor
+ |
+ |  get_node_param_group(self) -> dict
+ |      Returns the parameters of the nodes of this FFF, coupled with their usage tensor.
+ |
+ |      Returns
+ |      -------
+ |      dict
+ |              The parameters of the nodes of this FFF, coupled with their usage tensor.
+ |              Will have the following keys:
+ |                      - "params": a list containing the node parameters
+ |                      - "usage": the node usage tensor
  |
  |  training_forward(self, x: torch.Tensor, return_entropies: bool = False, use_hard_decisions: bool = False)
  |      Computes the forward pass of this FFF during training.
@@ -173,6 +211,8 @@ class FFF(torch.nn.modules.module.Module)
  |              The modified mixture is passed to the next node.
  |              Finally, the outputs of all leaves are mixed together to obtain the final output.
  |      - If `use_hard_decisions` is True and `return_entropies` is True, the entropies will be computed before the decisions are rounded.
+ |      - If self.training is False, region leaks and dropout will not be applied in this function.
+ |      - Node usage, when tracked, is computed after node leaks have been applied (but is of course also applied when there is no node leaks).
  |
  |      Raises
  |      ------

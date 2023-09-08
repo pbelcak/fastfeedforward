@@ -1,3 +1,4 @@
+from typing import Optional
 import torch
 
 from torch import nn
@@ -29,7 +30,10 @@ class FFF(nn.Module):
 	"""
 	An implementation of fast feedforward networks from the paper "Fast Feedforward Networks".
 	"""
-	def __init__(self, input_width: int, hidden_width: int, output_width: int, depth: int, activation=nn.ReLU(), dropout: float=0.0, train_hardened: bool=False, region_leak: float=0.0):
+	def __init__(self,
+			input_width: int, leaf_width: int, output_width: int, depth: int,
+			activation=nn.ReLU(), dropout: float=0.0, train_hardened: bool=False, 
+			region_leak: float=0.0, usage_mode: str = 'none'):
 		"""
 		Initializes a fast feedforward network (FFF).
 
@@ -37,7 +41,7 @@ class FFF(nn.Module):
 		----------
 		input_width : int
 			The width of the input, i.e. the size of the last dimension of the tensor passed into `forward()`.
-		hidden_width : int
+		leaf_width : int
 			The width of each leaf of this FFF.
 		output_width : int
 			The width of the output, i.e. the size of the last dimension of the tensor returned by `forward()`.
@@ -53,13 +57,18 @@ class FFF(nn.Module):
 		region_leak : float, optional
 			The probability of a region to leak to the next region at each node. Defaults to 0.0.
 			Plays no role if self.training is False.
+		usage_mode : str, optional
+			The mode of recording usage of the leaves and nodes of this FFF.
+			Must be one of ['hard', 'soft, 'none']. Defaults to 'none'.
 			
 		Raises
 		------
 		ValueError
-			- if `depth`, `input_width`, `hidden_width` or `output_width` are not positive integers
+			- if `input_width`, `leaf_width` or `output_width` are not positive integers
+			- if `depth` is not a positive integer or 0
 			- if `dropout` is not in the range [0, 1]
 			- if `region_leak` is not in the range [0, 1]
+			- if `usage_mode` is not one of ['hard', 'soft, 'none']
 		
 		Notes
 		-----
@@ -70,19 +79,22 @@ class FFF(nn.Module):
 		"""
 		super().__init__()
 		self.input_width = input_width
-		self.hidden_width = hidden_width
+		self.leaf_width = leaf_width
 		self.output_width = output_width
 		self.dropout = dropout
 		self.activation = activation
 		self.train_hardened = train_hardened
 		self.region_leak = region_leak
+		self.usage_mode = usage_mode
 
-		if depth <= 0 or input_width <= 0 or hidden_width <= 0 or output_width <= 0:
-			raise ValueError("input/hidden/output widths and depth must be all positive integers")
+		if depth < 0 or input_width <= 0 or leaf_width <= 0 or output_width <= 0:
+			raise ValueError("input/leaf/output widths and depth must be all positive integers")
 		if dropout < 0 or dropout > 1:
 			raise ValueError("dropout must be in the range [0, 1]")
 		if region_leak < 0 or region_leak > 1:
 			raise ValueError("region_leak must be in the range [0, 1]")
+		if usage_mode not in ['hard', 'soft', 'none']:
+			raise ValueError("usage_mode must be one of ['hard', 'soft', 'none']")
 
 		self.depth = nn.Parameter(torch.tensor(depth, dtype=torch.long), requires_grad=False)
 		self.n_leaves = 2 ** depth
@@ -92,12 +104,52 @@ class FFF(nn.Module):
 		self.node_weights = nn.Parameter(torch.empty((self.n_nodes, input_width), dtype=torch.float).uniform_(-l1_init_factor, +l1_init_factor), requires_grad=True)
 		self.node_biases = nn.Parameter(torch.empty((self.n_nodes, 1), dtype=torch.float).uniform_(-l1_init_factor, +l1_init_factor), requires_grad=True)
 
-		l2_init_factor = 1.0 / math.sqrt(self.hidden_width)
-		self.w1s = nn.Parameter(torch.empty((self.n_leaves, input_width, hidden_width), dtype=torch.float).uniform_(-l1_init_factor, +l1_init_factor), requires_grad=True)
-		self.b1s = nn.Parameter(torch.empty((self.n_leaves, hidden_width), dtype=torch.float).uniform_(-l1_init_factor, +l1_init_factor), requires_grad=True)
-		self.w2s = nn.Parameter(torch.empty((self.n_leaves, hidden_width, output_width), dtype=torch.float).uniform_(-l2_init_factor, +l2_init_factor), requires_grad=True)
+		l2_init_factor = 1.0 / math.sqrt(self.leaf_width)
+		self.w1s = nn.Parameter(torch.empty((self.n_leaves, input_width, leaf_width), dtype=torch.float).uniform_(-l1_init_factor, +l1_init_factor), requires_grad=True)
+		self.b1s = nn.Parameter(torch.empty((self.n_leaves, leaf_width), dtype=torch.float).uniform_(-l1_init_factor, +l1_init_factor), requires_grad=True)
+		self.w2s = nn.Parameter(torch.empty((self.n_leaves, leaf_width, output_width), dtype=torch.float).uniform_(-l2_init_factor, +l2_init_factor), requires_grad=True)
 		self.b2s = nn.Parameter(torch.empty((self.n_leaves, output_width), dtype=torch.float).uniform_(-l2_init_factor, +l2_init_factor), requires_grad=True)
 		self.leaf_dropout = nn.Dropout(dropout)
+
+		if usage_mode != 'none':
+			self.node_usage = nn.Parameter(torch.zeros((self.n_nodes,), dtype=torch.float), requires_grad=False)
+			self.leaf_usage = nn.Parameter(torch.zeros((self.n_leaves,), dtype=torch.float), requires_grad=False)
+
+	def get_node_param_group(self) -> dict:
+		"""
+		Returns the parameters of the nodes of this FFF, coupled with their usage tensor.
+
+		Returns
+		-------
+		dict
+			The parameters of the nodes of this FFF, coupled with their usage tensor.
+			Will have the following keys:
+				- "params": a list containing the node parameters
+				- "usage": the node usage tensor
+		"""
+
+		return {
+			"params": [self.node_weights, self.node_biases],
+			"usage": self.node_usage,
+		}
+	
+	def get_leaf_param_group(self) -> dict:
+		"""
+		Returns the parameters of the leaves of this FFF, coupled with their usage tensor.
+
+		Returns
+		-------
+		dict
+			The parameters of the leaves of this FFF, coupled with their usage tensor.
+			Will have the following keys:
+				- "params": a list containing the leaf parameters
+				- "usage": the node usage tensor
+		"""
+		
+		return {
+			"params": [self.w1s, self.b1s, self.w2s, self.b2s],
+			"usage": self.leaf_usage,
+		}
 
 	def training_forward(self, x: torch.Tensor, return_entropies: bool=False, use_hard_decisions: bool=False):
 		"""
@@ -131,7 +183,8 @@ class FFF(nn.Module):
 			The modified mixture is passed to the next node.
 			Finally, the outputs of all leaves are mixed together to obtain the final output.
 		- If `use_hard_decisions` is True and `return_entropies` is True, the entropies will be computed before the decisions are rounded.
-		- If self.training is False, region leaks and dropout will be disabled.
+		- If self.training is False, region leaks and dropout will not be applied in this function.
+		- Node usage, when tracked, is computed after node leaks have been applied (but is of course also applied when there is no node leaks).
 		
 		Raises
 		------
@@ -154,6 +207,9 @@ class FFF(nn.Module):
 		hard_decisions = use_hard_decisions or self.train_hardened
 		current_mixture = torch.ones((batch_size, self.n_leaves), dtype=torch.float, device=x.device)
 		entropies = None if not return_entropies else torch.zeros((batch_size, self.n_nodes), dtype=torch.float, device=x.device)
+
+		if self.usage_mode != 'none' and self.depth.item() > 0:
+			self.node_usage[0] += batch_size
 
 		for current_depth in range(self.depth.item()):
 			platform = torch.tensor(2 ** current_depth - 1, dtype=torch.long, device=x.device)
@@ -184,22 +240,37 @@ class FFF(nn.Module):
 				boundary_effect = torch.round(boundary_effect)				# (batch_size, n_nodes)
 				not_boundary_effect = 1 - boundary_effect					# (batch_size, n_nodes)
 			
-			mixture_modifier = torch.cat(
+			mixture_modifier = torch.cat( # this cat-fu is to interleavingly combine the two tensors
 				(not_boundary_effect.unsqueeze(-1), boundary_effect.unsqueeze(-1)),
 				dim=-1
 			).flatten(start_dim=-2, end_dim=-1).unsqueeze(-1)												# (batch_size, n_nodes*2, 1)
 			current_mixture = current_mixture.view(batch_size, 2 * n_nodes, self.n_leaves // (2 * n_nodes))	# (batch_size, 2*n_nodes, self.n_leaves // (2*n_nodes))
 			current_mixture.mul_(mixture_modifier)															# (batch_size, 2*n_nodes, self.n_leaves // (2*n_nodes))
 			current_mixture = current_mixture.flatten(start_dim=1, end_dim=2)								# (batch_size, self.n_leaves)
+
+			if self.usage_mode != 'none' and current_depth != self.depth.item() - 1:
+				if self.usage_mode == 'soft':
+					current_node_usage = mixture_modifier.squeeze(-1).sum(dim=0)							# (n_nodes*2,)
+				elif self.usage_mode == 'hard':
+					current_node_usage = torch.round(mixture_modifier).squeeze(-1).sum(dim=0)				# (n_nodes*2,)
+				self.node_usage[next_platform:next_platform+n_nodes*2] += current_node_usage.detach()		# (n_nodes*2,)
+
 			del mixture_modifier, boundary_effect, not_boundary_effect, boundary_plane_logits, boundary_plane_coeff_scores, current_weights, current_biases
+
+		if self.usage_mode != 'none':
+			if self.usage_mode == 'hard':
+				current_leaf_usage = torch.round(current_mixture).sum(dim=0)	# (n_leaves,)
+			else:
+				current_leaf_usage = current_mixture.sum(dim=0)					# (n_leaves,)
+			self.leaf_usage.data += current_leaf_usage.detach()
 
 		element_logits = torch.matmul(
 			x.unsqueeze(1).unsqueeze(1),		# (batch_size, 1, 1, self.input_width)
-			self.w1s.view(1, *self.w1s.shape)	# (1, self.n_leaves, self.input_width, self.hidden_width)
-		) # (batch_size, self.n_leaves, 1, self.hidden_width)
-		element_logits += self.b1s.view(1, *self.b1s.shape).unsqueeze(-2)					# (batch_size, self.n_leaves, 1, self.hidden_width)
-		element_activations = self.activation(element_logits)								# (batch_size, self.n_leaves, 1, self.hidden_width)
-		element_activations = self.leaf_dropout(element_activations)						# (batch_size, self.n_leaves, 1, self.hidden_width)
+			self.w1s.view(1, *self.w1s.shape)	# (1, self.n_leaves, self.input_width, self.leaf_width)
+		) # (batch_size, self.n_leaves, 1, self.leaf_width)
+		element_logits += self.b1s.view(1, *self.b1s.shape).unsqueeze(-2)					# (batch_size, self.n_leaves, 1, self.leaf_width)
+		element_activations = self.activation(element_logits)								# (batch_size, self.n_leaves, 1, self.leaf_width)
+		element_activations = self.leaf_dropout(element_activations)						# (batch_size, self.n_leaves, 1, self.leaf_width)
 		new_logits = torch.matmul(element_activations, self.w2s.view(1, *self.w2s.shape))	# (batch_size, self.n_leaves, 1, self.output_width)
 		new_logits = new_logits.squeeze(-2)													# (batch_size, self.n_leaves, self.output_width)
 		new_logits += self.b2s.unsqueeze(0)													# (batch_size, self.n_leaves, self.output_width)
@@ -214,7 +285,7 @@ class FFF(nn.Module):
 		else:
 			return final_logits, entropies.mean(dim=0)
 		
-	def forward(self, x: torch.Tensor, return_entropies: bool=False):
+	def forward(self, x: torch.Tensor, return_entropies: bool=False, use_hard_decisions: Optional[bool]=None):
 		"""
 		Computes the forward pass of this FFF.
 		If `self.training` is True, `training_forward()` will be called, otherwise `eval_forward()` will be called.
@@ -226,6 +297,12 @@ class FFF(nn.Module):
 		return_entropies : bool, optional
 			Whether to return the entropies of the decisions made at each node. Defaults to False.
 			If True, the mean batch entropies for each node will be returned as a tensor of shape (n_nodes,).
+		use_hard_decisions : bool, optional
+			Whether to use hard decisions during the forward pass. Defaults to None.
+			If None and `self.training` is True, will effectively be False.
+			If None and `self.training` is False, will effectively be True.
+			Cannot be set to False if `self.training` is False.
+
 		
 		Returns
 		-------
@@ -240,17 +317,21 @@ class FFF(nn.Module):
 		ValueError
 			- if `x` does not have shape (..., input_width)
 			- if `return_entropies` is True and `self.training` is False
+			- if `use_hard_decisions` is False and `self.training` is False
 
 		See Also
 		--------
 		`training_forward()`
 		`eval_forward()`
 		"""
+
 		if self.training:
-			return self.training_forward(x, return_entropies=return_entropies)
+			return self.training_forward(x, return_entropies=return_entropies, use_hard_decisions=use_hard_decisions if use_hard_decisions is not None else False)
 		else:
 			if return_entropies:
 				raise ValueError("Cannot return entropies during evaluation.")
+			if not use_hard_decisions:
+				raise ValueError("Cannot use soft decisions during evaluation.")
 			return self.eval_forward(x)
 
 	def eval_forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -290,17 +371,17 @@ class FFF(nn.Module):
 			current_nodes = (current_nodes - platform) * 2 + plane_choices + next_platform	# (batch_size,)
 
 		leaves = current_nodes - next_platform				# (batch_size,)
-		w1s = self.w1s.index_select(dim=0, index=leaves)	# (batch_size, input_width, hidden_width)
-		b1s = self.b1s.index_select(dim=0, index=leaves)	# (batch_size, hidden_width)
-		w2s = self.w2s.index_select(dim=0, index=leaves)	# (batch_size, hidden_width, output_width)
+		w1s = self.w1s.index_select(dim=0, index=leaves)	# (batch_size, input_width, leaf_width)
+		b1s = self.b1s.index_select(dim=0, index=leaves)	# (batch_size, leaf_width)
+		w2s = self.w2s.index_select(dim=0, index=leaves)	# (batch_size, leaf_width, output_width)
 		b2s = self.b2s.index_select(dim=0, index=leaves)	# (batch_size, output_width)
 
 		logits = torch.matmul(
 			x.unsqueeze(1),		# (batch_size, 1, self.input_width)
-			w1s					# (batch_size, self.input_width, self.hidden_width)
-		) 										# (batch_size, 1, self.hidden_width)
-		logits += b1s.unsqueeze(-2)				# (batch_size, 1, self.hidden_width)
-		activations = self.activation(logits)	# (batch_size, 1, self.hidden_width)
+			w1s					# (batch_size, self.input_width, self.leaf_width)
+		) 										# (batch_size, 1, self.leaf_width)
+		logits += b1s.unsqueeze(-2)				# (batch_size, 1, self.leaf_width)
+		activations = self.activation(logits)	# (batch_size, 1, self.leaf_width)
 		new_logits = torch.matmul(activations, w2s)		# (batch_size, 1, self.output_width)
 		new_logits = new_logits.squeeze(-2)				# (batch_size, self.output_width)
 		new_logits += b2s								# (batch_size, self.output_width)
