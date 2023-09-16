@@ -5,6 +5,13 @@ import torch
 from torch import Tensor
 
 class LocalAdam(torch.optim.Optimizer):
+    """Implements Adam algorithm with local batch size support.
+
+    All input parameters are as per :class:`torch.optim.Adam` except for the following:
+     - `usage`: a tensor of shape (N,) where N is the number of parameter blocks (to have separate gradient accumulations) in the group. If specified, the optimizer will only update parameters where usage[i] >= local_batch_size[i].
+     - `local_batch_size`: a tensor of shape (N,) where N is the number of parameter blocks (to have separate gradient accumulations) in the group. If specified, the optimizer will only update parameters where usage[i] >= local_batch_size[i].
+     - `differentiable`, `fusion`, and `foreach` from the original implementation are not supported.
+    """
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
                  weight_decay=0, amsgrad=False, *,
                  usage: Optional[torch.Tensor] = None, local_batch_size: Optional[int] = None,

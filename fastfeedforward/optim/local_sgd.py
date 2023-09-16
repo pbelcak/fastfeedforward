@@ -4,6 +4,13 @@ from typing import Optional, Callable, List
 from torch import Tensor
 
 class LocalSGD(optim.Optimizer):
+    """Implements SGD algorithm with local batch size support.
+
+    All input parameters are as per :class:`torch.optim.SGD` except for the following:
+     - `usage`: a tensor of shape (N,) where N is the number of parameter blocks (to have separate gradient accumulations) in the group. If specified, the optimizer will only update parameters where usage[i] >= local_batch_size[i].
+     - `local_batch_size`: a tensor of shape (N,) where N is the number of parameter blocks (to have separate gradient accumulations) in the group. If specified, the optimizer will only update parameters where usage[i] >= local_batch_size[i].
+     - `differentiable` and `foreach` from the original implementation are not supported.
+    """
     def __init__(self, params, lr, momentum=0, dampening=0,
                  weight_decay=0, nesterov=False, *, usage: Optional[torch.Tensor] = None, local_batch_size: Optional[int] = None, maximize: bool = False):
         if lr < 0.0:
