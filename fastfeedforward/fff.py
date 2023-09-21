@@ -264,16 +264,18 @@ class FFF(nn.Module):
 				current_leaf_usage = current_mixture.sum(dim=0)					# (n_leaves,)
 			self.leaf_usage.data += current_leaf_usage.detach()
 
-		element_logits = torch.matmul(
-			x.unsqueeze(1).unsqueeze(1),		# (batch_size, 1, 1, self.input_width)
-			self.w1s.view(1, *self.w1s.shape)	# (1, self.n_leaves, self.input_width, self.leaf_width)
-		) # (batch_size, self.n_leaves, 1, self.leaf_width)
-		element_logits += self.b1s.view(1, *self.b1s.shape).unsqueeze(-2)					# (batch_size, self.n_leaves, 1, self.leaf_width)
-		element_activations = self.activation(element_logits)								# (batch_size, self.n_leaves, 1, self.leaf_width)
-		element_activations = self.leaf_dropout(element_activations)						# (batch_size, self.n_leaves, 1, self.leaf_width)
-		new_logits = torch.matmul(element_activations, self.w2s.view(1, *self.w2s.shape))	# (batch_size, self.n_leaves, 1, self.output_width)
-		new_logits = new_logits.squeeze(-2)													# (batch_size, self.n_leaves, self.output_width)
-		new_logits += self.b2s.unsqueeze(0)													# (batch_size, self.n_leaves, self.output_width)
+		element_logits = torch.matmul(x, self.w1s.transpose(0, 1).flatten(1, 2))			# (batch_size, self.n_leaves * self.leaf_width)
+		element_logits = element_logits.view(batch_size, self.n_leaves, self.leaf_width)	# (batch_size, self.n_leaves, self.leaf_width)
+		element_logits += self.b1s.view(1, *self.b1s.shape)									# (batch_size, self.n_leaves, self.leaf_width)
+		element_activations = self.activation(element_logits)								# (batch_size, self.n_leaves, self.leaf_width)
+		element_activations = self.leaf_dropout(element_activations)						# (batch_size, self.n_leaves, self.leaf_width)
+		new_logits = torch.empty((batch_size, self.n_leaves, self.output_width), dtype=torch.float, device=x.device)
+		for i in range(self.n_leaves):
+			new_logits[:, i] = torch.matmul(
+				element_activations[:, i],
+				self.w2s[i]
+			) + self.b2s[i]
+		# new_logits has shape (batch_size, self.n_leaves, self.output_width)
 
 		new_logits *= current_mixture.unsqueeze(-1)			# (batch_size, self.n_leaves, self.output_width)
 		final_logits = new_logits.sum(dim=1)				# (batch_size, self.output_width)
@@ -387,5 +389,3 @@ class FFF(nn.Module):
 		new_logits += b2s								# (batch_size, self.output_width)
 
 		return new_logits.view(*original_shape[:-1], self.output_width)	# (..., self.output_width)
-
-		
