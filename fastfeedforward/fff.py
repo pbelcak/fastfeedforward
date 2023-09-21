@@ -332,7 +332,7 @@ class FFF(nn.Module):
 		else:
 			if return_entropies:
 				raise ValueError("Cannot return entropies during evaluation.")
-			if not use_hard_decisions:
+			if use_hard_decisions is not None and not use_hard_decisions:
 				raise ValueError("Cannot use soft decisions during evaluation.")
 			return self.eval_forward(x)
 
@@ -373,19 +373,18 @@ class FFF(nn.Module):
 			current_nodes = (current_nodes - platform) * 2 + plane_choices + next_platform	# (batch_size,)
 
 		leaves = current_nodes - next_platform				# (batch_size,)
-		w1s = self.w1s.index_select(dim=0, index=leaves)	# (batch_size, input_width, leaf_width)
-		b1s = self.b1s.index_select(dim=0, index=leaves)	# (batch_size, leaf_width)
-		w2s = self.w2s.index_select(dim=0, index=leaves)	# (batch_size, leaf_width, output_width)
-		b2s = self.b2s.index_select(dim=0, index=leaves)	# (batch_size, output_width)
-
-		logits = torch.matmul(
-			x.unsqueeze(1),		# (batch_size, 1, self.input_width)
-			w1s					# (batch_size, self.input_width, self.leaf_width)
-		) 										# (batch_size, 1, self.leaf_width)
-		logits += b1s.unsqueeze(-2)				# (batch_size, 1, self.leaf_width)
-		activations = self.activation(logits)	# (batch_size, 1, self.leaf_width)
-		new_logits = torch.matmul(activations, w2s)		# (batch_size, 1, self.output_width)
-		new_logits = new_logits.squeeze(-2)				# (batch_size, self.output_width)
-		new_logits += b2s								# (batch_size, self.output_width)
+		new_logits = torch.empty((batch_size, self.output_width), dtype=torch.float, device=x.device)
+		for i in range(leaves.shape[0]):
+			leaf_index = leaves[i]
+			logits = torch.matmul(
+				x[i].unsqueeze(0),					# (1, self.input_width)
+				self.w1s[leaf_index]				# (self.input_width, self.leaf_width)
+			) 												# (1, self.leaf_width)
+			logits += self.b1s[leaf_index].unsqueeze(-2)	# (1, self.leaf_width)
+			activations = self.activation(logits)			# (1, self.leaf_width)
+			new_logits[i] = torch.matmul(
+				activations,
+				self.w2s[leaf_index]
+			).squeeze(-2)									# (1, self.output_width)
 
 		return new_logits.view(*original_shape[:-1], self.output_width)	# (..., self.output_width)
