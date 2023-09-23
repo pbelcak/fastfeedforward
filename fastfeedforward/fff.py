@@ -335,8 +335,90 @@ class FFF(nn.Module):
 			if use_hard_decisions is not None and not use_hard_decisions:
 				raise ValueError("Cannot use soft decisions during evaluation.")
 			return self.eval_forward(x)
+		
+	def eval_forward_sparse(self, x: torch.Tensor) -> torch.Tensor:
+		original_shape = x.shape
+		x = x.view(-1, x.shape[-1])
+		batch_size = x.shape[0]
+		# x has shape (batch_size, input_width)
 
-	def eval_forward(self, x: torch.Tensor) -> torch.Tensor:
+		current_nodes = torch.zeros((batch_size,), dtype=torch.long, device=x.device)
+		for i in range(self.depth.item()):
+			plane_coeffs = self.node_weights.index_select(dim=0, index=current_nodes)		# (batch_size, input_width)
+			plane_offsets = self.node_biases.index_select(dim=0, index=current_nodes)		# (batch_size, 1)
+			plane_coeff_score = torch.bmm(x.unsqueeze(1), plane_coeffs.unsqueeze(-1))		# (batch_size, 1, 1)
+			plane_score = plane_coeff_score.squeeze(-1) + plane_offsets						# (batch_size, 1)
+			plane_choices = (plane_score.squeeze(-1) >= 0).long()							# (batch_size,)
+
+			platform = torch.tensor(2 ** i - 1, dtype=torch.long, device=x.device)			# (batch_size,)
+			next_platform = torch.tensor(2 ** (i+1) - 1, dtype=torch.long, device=x.device)	# (batch_size,)
+			current_nodes = (current_nodes - platform) * 2 + plane_choices + next_platform	# (batch_size,)
+
+		leaves = current_nodes - next_platform				# (batch_size,)
+
+		# to compute new_logits, use sparse hybrid COO tensor
+		x_coordinates = torch.arange(batch_size, dtype=torch.long, device=x.device)	# (batch_size,)
+		y_coordinate_bases = (leaves.long() * self.input_width).unsqueeze(-1)									# (batch_size, 1)
+		y_coordinate_offsets = torch.arange(self.input_width, dtype=torch.long, device=x.device).unsqueeze(0)	# (1, input_width)
+		y_coordinates = y_coordinate_bases + y_coordinate_offsets												# (batch_size, input_width)
+		indices = torch.stack((x_coordinates.repeat(self.input_width), y_coordinates.flatten()), dim=0)			# (2, batch_size * input_width)
+		x_sparse = torch.sparse_coo_tensor(
+			indices=indices,
+			values=x.flatten(),
+			size=(batch_size, self.n_leaves * self.input_width),
+			device=x.device
+		)	# (batch_size, self.n_leaves * self.input_width)
+		logits = torch.mm(x_sparse, self.w1s.flatten(0, 1))		# (batch_size, self.leaf_width); is sparse still?
+		logits += self.b1s[leaves] 								# (batch_size, self.leaf_width)
+		activations = self.activation(logits)					# (batch_size, self.leaf_width)
+		
+
+		y_coordinate_bases = (leaves.long() * self.leaf_width).unsqueeze(-1)									# (batch_size, 1)
+		y_coordinate_offsets = torch.arange(self.leaf_width, dtype=torch.long, device=x.device).unsqueeze(0)	# (1, leaf_width)
+		y_coordinates = y_coordinate_bases + y_coordinate_offsets												# (batch_size, leaf_width)
+		second_indices = torch.stack((x_coordinates.repeat(self.leaf_width), y_coordinates.flatten()), dim=0)	# (2, batch_size * leaf_width)
+		activations_sparse = torch.sparse_coo_tensor(
+			indices=second_indices,
+			values=activations.flatten(),
+			size=(batch_size, self.n_leaves * self.leaf_width),
+			device=x.device
+		)	# (batch_size, self.n_leaves, 1, self.leaf_width)
+		new_logits = torch.matmul(activations_sparse, self.w2s.flatten(0, 1))	# (batch_size, self.output_width)
+		new_logits += self.b2s[leaves] 											# (batch_size, self.output_width)
+
+		return new_logits.view(*original_shape[:-1], self.output_width)	# (..., self.output_width)
+	
+	def eval_forward_selective(self, x: torch.Tensor) -> torch.Tensor:
+		original_shape = x.shape
+		x = x.view(-1, x.shape[-1])
+		batch_size = x.shape[0]
+		# x has shape (batch_size, input_width)
+
+		current_nodes = torch.zeros((batch_size,), dtype=torch.long, device=x.device)
+		for i in range(self.depth.item()):
+			plane_coeffs = self.node_weights.index_select(dim=0, index=current_nodes)		# (batch_size, input_width)
+			plane_offsets = self.node_biases.index_select(dim=0, index=current_nodes)		# (batch_size, 1)
+			plane_coeff_score = torch.bmm(x.unsqueeze(1), plane_coeffs.unsqueeze(-1))		# (batch_size, 1, 1)
+			plane_score = plane_coeff_score.squeeze(-1) + plane_offsets						# (batch_size, 1)
+			plane_choices = (plane_score.squeeze(-1) >= 0).long()							# (batch_size,)
+
+			platform = torch.tensor(2 ** i - 1, dtype=torch.long, device=x.device)			# (batch_size,)
+			next_platform = torch.tensor(2 ** (i+1) - 1, dtype=torch.long, device=x.device)	# (batch_size,)
+			current_nodes = (current_nodes - platform) * 2 + plane_choices + next_platform	# (batch_size,)
+
+		leaves = current_nodes - next_platform						# (batch_size,)
+
+		logits = torch.bmm(x.unsqueeze(-2), self.w1s[leaves])		# (batch_size, 1, self.leaf_width)
+		logits += self.b1s[leaves].usqueeze(-1) 					# (batch_size, 1, self.leaf_width)
+		activations = self.activation(logits)						# (batch_size, 1, self.leaf_width)
+		
+		new_logits = torch.matmul(activations, self.w2s[leaves])	# (batch_size, 1, self.output_width)
+		new_logits = new_logits.squeeze(-2)							# (batch_size, self.output_width)
+		new_logits += self.b2s[leaves] 								# (batch_size, self.output_width)
+
+		return new_logits.view(*original_shape[:-1], self.output_width)	# (..., self.output_width)
+
+	def eval_forward_desired_sparse(self, x: torch.Tensor) -> torch.Tensor:
 		"""
 		Computes the forward pass of this FFF during evaluation (i.e. making hard decisions at each node and traversing the FFF in logarithmic time).
 
@@ -373,18 +455,28 @@ class FFF(nn.Module):
 			current_nodes = (current_nodes - platform) * 2 + plane_choices + next_platform	# (batch_size,)
 
 		leaves = current_nodes - next_platform				# (batch_size,)
-		new_logits = torch.empty((batch_size, self.output_width), dtype=torch.float, device=x.device)
-		for i in range(leaves.shape[0]):
-			leaf_index = leaves[i]
-			logits = torch.matmul(
-				x[i].unsqueeze(0),					# (1, self.input_width)
-				self.w1s[leaf_index]				# (self.input_width, self.leaf_width)
-			) 												# (1, self.leaf_width)
-			logits += self.b1s[leaf_index].unsqueeze(-2)	# (1, self.leaf_width)
-			activations = self.activation(logits)			# (1, self.leaf_width)
-			new_logits[i] = torch.matmul(
-				activations,
-				self.w2s[leaf_index]
-			).squeeze(-2)									# (1, self.output_width)
+
+		# to compute new_logits, use sparse hybrid COO tensor
+		x_coordinates = torch.arange(batch_size, dtype=torch.long, device=x.device)	# (batch_size,)
+		y_coordinates = leaves.long()
+		indices = torch.stack((x_coordinates, y_coordinates), dim=0)	# (2, batch_size)
+		x_sparse = torch.sparse_coo_tensor(
+			indices=indices,
+			values=x.unsqueeze(-2),
+			size=(batch_size, self.n_leaves, 1, self.input_width),
+			device=x.device
+		)	# (batch_size, self.n_leaves, 1, self.input_width)
+		logits = torch.matmul(x_sparse, self.w1s).sum(dim=1)	# (batch_size, 1, self.leaf_width); is sparse still?
+		logits = logits.squeeze(dim=1)							# (batch_size, self.leaf_width)
+		logits.index_add_(dim=0, index=leaves, source=self.b1s) # (batch_size, self.leaf_width)
+		activations = self.activation(logits)					# (batch_size, self.leaf_width)
+		w2s = torch.sparse_coo_tensor(
+			indices=indices,
+			values=activations.unsqueeze(-1),
+			size=(batch_size, self.n_leaves, 1, self.leaf_width),
+			device=x.device
+		)	# (batch_size, self.n_leaves, 1, self.leaf_width)
+		new_logits = torch.matmul(activations, w2s).squeeze(-2)
+		new_logits.index_add_(dim=0, index=leaves, source=self.b2s) # (batch_size, self.output_width)
 
 		return new_logits.view(*original_shape[:-1], self.output_width)	# (..., self.output_width)
