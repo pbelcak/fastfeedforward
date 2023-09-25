@@ -34,8 +34,8 @@ class LocalSGD(optim.Optimizer):
                 if not isinstance(param['usage'], torch.Tensor):
                     raise ValueError("Parameter usage must be a tensor")
                 for p in param['params']:
-                    if p.size(0) != param['usage'].size(0):
-                        raise ValueError("Every tensor in param['params'] must have the same size(0) as param['usage'].size(0)")
+                    if p.requires_grad and p.size(0) != param['usage'].size(0):
+                        raise ValueError("Every tensor in param['params'] that requires grad must have the same size(0) as param['usage'].size(0)")
                     
             if 'local_batch_size' in param:
                 if not isinstance(param['local_batch_size'], int):
@@ -190,7 +190,7 @@ def sgd(params: List[Tensor],
             correction = correction.reshape(correction.shape + (1,) * (len(d_p.shape) - len(correction.shape)))
             correction = correction.expand_as(d_p)
         else:
-            d_p_filter_based_on_usage = torch.ones_like(u, dtype=torch.bool)
+            d_p_filter_based_on_usage = torch.ones((d_p.size(0),), dtype=torch.bool, device=d_p.device)
             correction = 1.0
 
         dpfbou = d_p_filter_based_on_usage

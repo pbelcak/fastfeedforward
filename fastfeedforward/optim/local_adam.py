@@ -41,8 +41,8 @@ class LocalAdam(torch.optim.Optimizer):
                 if not isinstance(param['usage'], torch.Tensor):
                     raise ValueError("Parameter usage must be a tensor")
                 for p in param['params']:
-                    if p.size(0) != param['usage'].size(0):
-                        raise ValueError("Every tensor in param['params'] must have the same size(0) as param['usage'].size(0)")
+                    if p.requires_grad and p.size(0) != param['usage'].size(0):
+                        raise ValueError("Every tensor in param['params'] that requires grad must have the same size(0) as param['usage'].size(0)")
                     
             if 'local_batch_size' in param:
                 if not isinstance(param['local_batch_size'], int):
