@@ -386,5 +386,6 @@ class FFF(nn.Module):
 				activations,
 				self.w2s[leaf_index]
 			).squeeze(-2)									# (1, self.output_width)
+			new_logits[i] += self.b2s[leaf_index]					# (1, self.output_width)
 
 		return new_logits.view(*original_shape[:-1], self.output_width)	# (..., self.output_width)
