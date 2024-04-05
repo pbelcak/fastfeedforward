@@ -1,4 +1,3 @@
-import math
 from typing import List, Optional
 
 import torch
@@ -30,9 +29,9 @@ class LocalAdam(torch.optim.Optimizer):
             raise ValueError("Parameter usage must be a tensor")
         if local_batch_size is not None and local_batch_size <= 0:
             raise ValueError("Invalid local_batch_size value: {}, must be > 0 or unspecified altogether (None)".format(local_batch_size))
-        
+
         params = list(params)
-        
+
         for param in params:
             if not isinstance(param, dict):
                 continue
@@ -43,7 +42,7 @@ class LocalAdam(torch.optim.Optimizer):
                 for p in param['params']:
                     if p.size(0) != param['usage'].size(0):
                         raise ValueError("Every tensor in param['params'] must have the same size(0) as param['usage'].size(0)")
-                    
+
             if 'local_batch_size' in param:
                 if not isinstance(param['local_batch_size'], int):
                     raise ValueError("Parameter local_batch_size must be an int")
@@ -63,7 +62,7 @@ class LocalAdam(torch.optim.Optimizer):
             group.setdefault('maximize', False)
             group.setdefault('usage', None)
             group.setdefault('local_batch_size', None)
-        
+
         state_values = list(self.state.values())
         step_is_tensor = (len(state_values) != 0) and torch.is_tensor(state_values[0]['step'])
         if not step_is_tensor:
@@ -126,7 +125,7 @@ class LocalAdam(torch.optim.Optimizer):
                 where_to_zero = u >= group['local_batch_size']
             else:
                 where_to_zero = None
-            
+
             for p in group['params']:
                 if p.grad is not None:
                     if where_to_zero is None:
@@ -139,7 +138,7 @@ class LocalAdam(torch.optim.Optimizer):
                             p.grad.zero_()
                     else:
                         p.grad[where_to_zero] = 0
-            
+
             if where_to_zero is not None:
                 if u in usage_zeroing_per_usage_holder:
                     usage_zeroing_per_usage_holder[u].logical_or_(where_to_zero)
@@ -342,7 +341,7 @@ def _single_tensor_adam(params: List[Tensor],
                 )
             else:
                 torch.maximum(max_exp_avg_sqs[i], exp_avg_sq, out=max_exp_avg_sqs[i])
-            
+
             # Use the max. for normalizing running avg. of gradient
             denom = (max_exp_avg_sqs[i].sqrt() / bias_correction2_sqrt).add_(eps)
         else:
