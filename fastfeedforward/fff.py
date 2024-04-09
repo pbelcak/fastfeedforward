@@ -269,13 +269,19 @@ class FFF(nn.Module):
 		element_logits += self.b1s.view(1, *self.b1s.shape)									# (batch_size, self.n_leaves, self.leaf_width)
 		element_activations = self.activation(element_logits)								# (batch_size, self.n_leaves, self.leaf_width)
 		element_activations = self.leaf_dropout(element_activations)						# (batch_size, self.n_leaves, self.leaf_width)
-		new_logits = torch.empty((batch_size, self.n_leaves, self.output_width), dtype=torch.float, device=x.device)
-		for i in range(self.n_leaves):
-			new_logits[:, i] = torch.matmul(
-				element_activations[:, i],
-				self.w2s[i]
-			) + self.b2s[i]
+		# new_logits = torch.empty((batch_size, self.n_leaves, self.output_width), dtype=torch.float, device=x.device)
+		# for i in range(self.n_leaves):
+		# 	new_logits[:, i] = torch.matmul(
+		# 		element_activations[:, i],
+		# 		self.w2s[i]
+		# 	) + self.b2s[i]
 		# new_logits has shape (batch_size, self.n_leaves, self.output_width)
+
+		new_logits = torch.einsum(
+			'...li,lij->...lj',
+			element_activations,
+			self.w2s
+		) + self.b2s				# (batch_size, self.n_leaves, self.output_width)
 
 		new_logits *= current_mixture.unsqueeze(-1)			# (batch_size, self.n_leaves, self.output_width)
 		final_logits = new_logits.sum(dim=1)				# (batch_size, self.output_width)
@@ -373,18 +379,31 @@ class FFF(nn.Module):
 			current_nodes = (current_nodes - platform) * 2 + plane_choices + next_platform	# (batch_size,)
 
 		leaves = current_nodes - next_platform				# (batch_size,)
-		new_logits = torch.empty((batch_size, self.output_width), dtype=torch.float, device=x.device)
-		for i in range(leaves.shape[0]):
-			leaf_index = leaves[i]
-			logits = torch.matmul(
-				x[i].unsqueeze(0),					# (1, self.input_width)
-				self.w1s[leaf_index]				# (self.input_width, self.leaf_width)
-			) 												# (1, self.leaf_width)
-			logits += self.b1s[leaf_index].unsqueeze(-2)	# (1, self.leaf_width)
-			activations = self.activation(logits)			# (1, self.leaf_width)
-			new_logits[i] = torch.matmul(
-				activations,
-				self.w2s[leaf_index]
-			).squeeze(-2)									# (1, self.output_width)
+		# new_logits = torch.empty((batch_size, self.output_width), dtype=torch.float, device=x.device)
+		# for i in range(leaves.shape[0]):
+		# 	leaf_index = leaves[i]
+		# 	logits = torch.matmul(
+		# 		x[i].unsqueeze(0),					# (1, self.input_width)
+		# 		self.w1s[leaf_index]				# (self.input_width, self.leaf_width)
+		# 	) 												# (1, self.leaf_width)
+		# 	logits += self.b1s[leaf_index].unsqueeze(-2)	# (1, self.leaf_width)
+		# 	activations = self.activation(logits)			# (1, self.leaf_width)
+		# 	new_logits[i] = torch.matmul(
+		# 		activations,
+		# 		self.w2s[leaf_index]
+		# 	).squeeze(-2)									# (1, self.output_width)
+		# 	new_logits[i] += self.b2s[leaf_index]					# (1, self.output_width)
+
+		logits = torch.einsum(
+			'...i,...ij->...j',
+			x,
+			self.w1s[leaves]
+		) + self.b1s[leaves]										# (batch_size, self.leaf_width)
+		activations = self.activation(logits)						# (batch_size, self.leaf_width)
+		new_logits = torch.einsum(
+			'...i,...ij->...j',
+			activations,
+			self.w2s[leaves]
+		) + self.b2s[leaves]										# (batch_size, self.output_width)
 
 		return new_logits.view(*original_shape[:-1], self.output_width)	# (..., self.output_width)
