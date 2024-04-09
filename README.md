@@ -6,17 +6,17 @@ More information can be found in the paper "Fast Feedforward Networks" ([arXiv](
 
 ## Quickstart
 1. Install the package.
-```
+```sh
 pip install fastfeedforward
 ```
 
 2. Import the `FFF` layer implementation.
-```
+```py
 from fastfeedforward import FFF
 ```
 
 3. Use `FFF` in place of feedforward or mixture-of-experts layers, e.g. instead of
-```
+```py
 my_ff = torch.nn.Sequential(
     torch.nn.Linear(input_width, hidden_width, bias=True),
     torch.nn.ReLU(),
@@ -25,7 +25,7 @@ my_ff = torch.nn.Sequential(
 )
 ```
 use
-```
+```py
 depth = ... # your choice of the FFF depth
 leaf_width = math.ceil(hidden_width / 2**depth)
 region_leak # your choice of the region leak probability (0 - 0.5) to encourage generalisation in very deep FFFs

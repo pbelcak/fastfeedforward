@@ -19,13 +19,13 @@ class LocalSGD(optim.Optimizer):
             raise ValueError("Invalid momentum value: {}".format(momentum))
         if weight_decay < 0.0:
             raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
-        if usage is not None and not isinstance(param['usage'], torch.Tensor):
+        if usage is not None and not isinstance(params['usage'], torch.Tensor):
             raise ValueError("Parameter usage must be a tensor")
         if local_batch_size is not None and local_batch_size <= 0:
             raise ValueError("Invalid local_batch_size value: {}, must be >0".format(local_batch_size))
-        
+
         params = list(params)
-        
+
         for param in params:
             if not isinstance(param, dict):
                 continue
@@ -36,7 +36,7 @@ class LocalSGD(optim.Optimizer):
                 for p in param['params']:
                     if p.size(0) != param['usage'].size(0):
                         raise ValueError("Every tensor in param['params'] must have the same size(0) as param['usage'].size(0)")
-                    
+
             if 'local_batch_size' in param:
                 if not isinstance(param['local_batch_size'], int):
                     raise ValueError("Parameter local_batch_size must be an int")
@@ -45,7 +45,7 @@ class LocalSGD(optim.Optimizer):
 
         defaults = dict(lr=lr, momentum=momentum, dampening=dampening,
                         weight_decay=weight_decay, nesterov=nesterov,
-                        maximize=maximize, 
+                        maximize=maximize,
                         usage=usage, local_batch_size=local_batch_size)
         if nesterov and (momentum <= 0 or dampening != 0):
             raise ValueError("Nesterov momentum requires a momentum and zero dampening")
@@ -71,7 +71,7 @@ class LocalSGD(optim.Optimizer):
                 else:
                     u_list.append(None)
                     lbs_list.append(None)
-                
+
                 d_p_list.append(p.grad)
                 if p.grad.is_sparse:
                     has_sparse_grad = True
@@ -92,7 +92,7 @@ class LocalSGD(optim.Optimizer):
                 where_to_zero = u >= group['local_batch_size']
             else:
                 where_to_zero = None
-            
+
             for p in group['params']:
                 if p.grad is not None:
                     if where_to_zero is None:
@@ -105,7 +105,7 @@ class LocalSGD(optim.Optimizer):
                             p.grad.zero_()
                     else:
                         p.grad[where_to_zero] = 0
-            
+
             if where_to_zero is not None:
                 if u in usage_zeroing_per_usage_holder:
                     usage_zeroing_per_usage_holder[u].logical_or_(where_to_zero)

@@ -14,7 +14,7 @@ def compute_entropy_safe(p: torch.Tensor, minus_p: torch.Tensor) -> torch.Tensor
 		The probability of the Bernoulli distribution. Must be in the range (0, 1).
 	minus_p : torch.Tensor
 		the pre-computed value of 1 - `p`. Will be, by definition, in the range (0, 1).
-	
+
 	Returns
 	-------
 	torch.Tensor
@@ -32,7 +32,7 @@ class FFF(nn.Module):
 	"""
 	def __init__(self,
 			input_width: int, leaf_width: int, output_width: int, depth: int,
-			activation=nn.ReLU(), dropout: float=0.0, train_hardened: bool=False, 
+			activation=nn.ReLU(), dropout: float=0.0, train_hardened: bool=False,
 			region_leak: float=0.0, usage_mode: str = 'none'):
 		"""
 		Initializes a fast feedforward network (FFF).
@@ -60,7 +60,7 @@ class FFF(nn.Module):
 		usage_mode : str, optional
 			The mode of recording usage of the leaves and nodes of this FFF.
 			Must be one of ['hard', 'soft, 'none']. Defaults to 'none'.
-			
+
 		Raises
 		------
 		ValueError
@@ -69,7 +69,7 @@ class FFF(nn.Module):
 			- if `dropout` is not in the range [0, 1]
 			- if `region_leak` is not in the range [0, 1]
 			- if `usage_mode` is not one of ['hard', 'soft, 'none']
-		
+
 		Notes
 		-----
 		- The number of leaves of the FFF will be 2**depth.
@@ -132,7 +132,7 @@ class FFF(nn.Module):
 			"params": [self.node_weights, self.node_biases],
 			"usage": self.node_usage,
 		}
-	
+
 	def get_leaf_param_group(self) -> dict:
 		"""
 		Returns the parameters of the leaves of this FFF, coupled with their usage tensor.
@@ -145,7 +145,7 @@ class FFF(nn.Module):
 				- "params": a list containing the leaf parameters
 				- "usage": the node usage tensor
 		"""
-		
+
 		return {
 			"params": [self.w1s, self.b1s, self.w2s, self.b2s],
 			"usage": self.leaf_usage,
@@ -185,7 +185,7 @@ class FFF(nn.Module):
 		- If `use_hard_decisions` is True and `return_entropies` is True, the entropies will be computed before the decisions are rounded.
 		- If self.training is False, region leaks and dropout will not be applied in this function.
 		- Node usage, when tracked, is computed after node leaks have been applied (but is of course also applied when there is no node leaks).
-		
+
 		Raises
 		------
 		ValueError
@@ -216,7 +216,7 @@ class FFF(nn.Module):
 			next_platform = torch.tensor(2 ** (current_depth+1) - 1, dtype=torch.long, device=x.device)
 
 			n_nodes = 2 ** current_depth
-			current_weights = self.node_weights[platform:next_platform]	# (n_nodes, input_width)	
+			current_weights = self.node_weights[platform:next_platform]	# (n_nodes, input_width)
 			current_biases = self.node_biases[platform:next_platform]	# (n_nodes, 1)
 
 			boundary_plane_coeff_scores = torch.matmul(x, current_weights.transpose(0, 1))		# (batch_size, n_nodes)
@@ -235,11 +235,11 @@ class FFF(nn.Module):
 					boundary_effect, not_boundary_effect
 				) # (batch_size, n_nodes)
 				entropies[:, platform:next_platform] = platform_entropies	# (batch_size, n_nodes)
-				
+
 			if hard_decisions:
 				boundary_effect = torch.round(boundary_effect)				# (batch_size, n_nodes)
 				not_boundary_effect = 1 - boundary_effect					# (batch_size, n_nodes)
-			
+
 			mixture_modifier = torch.cat( # this cat-fu is to interleavingly combine the two tensors
 				(not_boundary_effect.unsqueeze(-1), boundary_effect.unsqueeze(-1)),
 				dim=-1
@@ -279,14 +279,14 @@ class FFF(nn.Module):
 
 		new_logits *= current_mixture.unsqueeze(-1)			# (batch_size, self.n_leaves, self.output_width)
 		final_logits = new_logits.sum(dim=1)				# (batch_size, self.output_width)
-		
+
 		final_logits = final_logits.view(*original_shape[:-1], self.output_width)	# (..., self.output_width)
 
 		if not return_entropies:
 			return final_logits
 		else:
 			return final_logits, entropies.mean(dim=0)
-		
+
 	def forward(self, x: torch.Tensor, return_entropies: bool=False, use_hard_decisions: Optional[bool]=None):
 		"""
 		Computes the forward pass of this FFF.
@@ -305,7 +305,7 @@ class FFF(nn.Module):
 			If None and `self.training` is False, will effectively be True.
 			Cannot be set to False if `self.training` is False.
 
-		
+
 		Returns
 		-------
 		torch.Tensor
@@ -313,7 +313,7 @@ class FFF(nn.Module):
 		torch.Tensor, optional
 			The mean batch entropies for each node. Will be returned with shape (n_nodes,) if `return_entropies` is True.
 			Will not be returned if `return_entropies` is False.
-		
+
 		Raises
 		------
 		ValueError
